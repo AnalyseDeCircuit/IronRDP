@@ -258,6 +258,12 @@ pub struct Config {
     /// [\[MS-RDPBCGR\] 2.2.1.3.7]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/861f2bbb-6ca2-4c5a-8c44-0714fa901e70
     /// [`MultiTransportChannelData`]: ironrdp_pdu::gcc::MultiTransportChannelData
     pub multitransport_flags: Option<gcc::MultiTransportFlags>,
+
+    /// Advertise support for the RDP Graphics Pipeline dynamic virtual channel.
+    ///
+    /// Callers must set this only when they also attach a working `Microsoft::Windows::RDS::Graphics`
+    /// dynamic virtual channel handler.
+    pub support_dyn_vc_gfx_protocol: bool,
 }
 
 ironrdp_core::assert_impl!(Config: Send, Sync);
