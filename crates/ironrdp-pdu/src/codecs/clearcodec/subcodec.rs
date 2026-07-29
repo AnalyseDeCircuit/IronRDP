@@ -155,16 +155,17 @@ mod tests {
         data.push(0x00); // Raw
         data.extend_from_slice(&[0xFF, 0xFF, 0xFF]);
 
-        // Second region: 1x1 RLEX (minimal: palette_count=1 + run)
+        // Second region: 1x1 RLEX with one suite pixel and an empty run.
         data.extend_from_slice(&5u16.to_le_bytes());
         data.extend_from_slice(&5u16.to_le_bytes());
         data.extend_from_slice(&1u16.to_le_bytes());
         data.extend_from_slice(&1u16.to_le_bytes());
-        data.extend_from_slice(&5u32.to_le_bytes());
+        data.extend_from_slice(&6u32.to_le_bytes());
         data.push(0x02); // RLEX
         data.push(1); // palette_count
         data.extend_from_slice(&[0x00, 0x00, 0x00]); // palette entry
-        data.push(1); // run_length
+        data.push(0); // control: stop_index=0, suite_depth=0
+        data.push(0); // run_length
 
         let regions = decode_subcodec_layer(&data).unwrap();
         assert_eq!(regions.len(), 2);
