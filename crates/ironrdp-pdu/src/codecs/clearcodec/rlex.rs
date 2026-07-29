@@ -74,49 +74,37 @@ pub fn decode_rlex(data: &[u8]) -> DecodeResult<RlexData> {
     };
     let suite_depth_bits = 8u8.saturating_sub(stop_index_bits);
 
-    // Decode segments from remaining bytes
     let mut segments = Vec::new();
-    let remaining = src.len();
-
-    if stop_index_bits == 0 {
-        // Single palette entry: no stop/suite bits, only run lengths
-        // Each byte is a run length factor for palette[0]
-        decode_single_palette_segments(&mut src, &mut segments)?;
-    } else {
-        decode_multi_palette_segments(remaining, &mut src, stop_index_bits, suite_depth_bits, &mut segments)?;
-    }
+    decode_segments(&mut src, stop_index_bits, suite_depth_bits, &mut segments)?;
 
     Ok(RlexData { palette, segments })
 }
 
-fn decode_single_palette_segments(src: &mut ReadCursor<'_>, segments: &mut Vec<RlexSegment>) -> DecodeResult<()> {
-    while !src.is_empty() {
-        let run_length = decode_run_length(src)?;
-        segments.push(RlexSegment {
-            start_index: 0,
-            stop_index: 0,
-            run_length,
-        });
-    }
-    Ok(())
-}
-
-fn decode_multi_palette_segments(
-    _remaining: usize,
+fn decode_segments(
     src: &mut ReadCursor<'_>,
     stop_index_bits: u8,
     suite_depth_bits: u8,
     segments: &mut Vec<RlexSegment>,
 ) -> DecodeResult<()> {
-    let stop_mask = (1u8 << stop_index_bits) - 1;
-    let depth_mask = (1u8 << suite_depth_bits) - 1;
+    let stop_mask = if stop_index_bits == 0 {
+        0
+    } else {
+        (1u8 << stop_index_bits) - 1
+    };
+    let depth_mask = if suite_depth_bits == 8 {
+        u8::MAX
+    } else {
+        (1u8 << suite_depth_bits) - 1
+    };
 
     while !src.is_empty() {
+        // The control byte is present even when a one-entry palette leaves no stop-index bits.
         let packed = src.read_u8();
         let stop_index = packed & stop_mask;
         let suite_depth = (packed >> stop_index_bits) & depth_mask;
-
-        let start_index = stop_index.saturating_sub(suite_depth);
+        let start_index = stop_index
+            .checked_sub(suite_depth)
+            .ok_or_else(|| invalid_field_err!("suiteDepth", "suite depth exceeds stop index"))?;
 
         let run_length = decode_run_length(src)?;
 
@@ -198,6 +186,27 @@ mod tests {
         assert_eq!(rlex.segments[0].run_length, 5);
         assert_eq!(rlex.segments[1].stop_index, 1);
         assert_eq!(rlex.segments[1].run_length, 3);
+    }
+
+    #[test]
+    fn decode_rlex_single_palette_reads_control_before_run_length() {
+        // A single-color segment still carries its zero-valued suite control byte.
+        let data = [1, 0x12, 0x34, 0x56, 0x00, 3];
+
+        let rlex = decode_rlex(&data).unwrap();
+
+        assert_eq!(rlex.segments.len(), 1);
+        assert_eq!(rlex.segments[0].start_index, 0);
+        assert_eq!(rlex.segments[0].stop_index, 0);
+        assert_eq!(rlex.segments[0].run_length, 3);
+    }
+
+    #[test]
+    fn reject_suite_depth_larger_than_stop_index() {
+        // With two palette entries, 0b00000010 encodes stop=0 and depth=1.
+        let data = [2, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0b0000_0010, 0];
+
+        assert!(decode_rlex(&data).is_err());
     }
 
     #[test]
