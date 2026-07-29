@@ -360,6 +360,9 @@ impl ClearCodecDecoder {
                         }
                     }
                 }
+                if px != pixel_budget {
+                    return Err(invalid_field_err!("rlex", "segments do not fill region pixel count"));
+                }
             }
             SubcodecId::NsCodec => {
                 // Not yet implemented; encoder avoids generating NSCodec tiles.
@@ -595,6 +598,32 @@ mod tests {
         data
     }
 
+    fn make_rlex_only_stream(width: u16, height: u16, bitmap_data: &[u8]) -> Vec<u8> {
+        let mut subcodec_data = Vec::new();
+        subcodec_data.extend_from_slice(&0u16.to_le_bytes()); // x_start
+        subcodec_data.extend_from_slice(&0u16.to_le_bytes()); // y_start
+        subcodec_data.extend_from_slice(&width.to_le_bytes());
+        subcodec_data.extend_from_slice(&height.to_le_bytes());
+        subcodec_data.extend_from_slice(
+            &u32::try_from(bitmap_data.len())
+                .expect("test bitmap length fits u32")
+                .to_le_bytes(),
+        );
+        subcodec_data.push(0x02); // SubcodecId::Rlex
+        subcodec_data.extend_from_slice(bitmap_data);
+
+        let mut stream = vec![0x00, 0x00]; // flags and sequence number
+        stream.extend_from_slice(&0u32.to_le_bytes()); // residualByteCount
+        stream.extend_from_slice(&0u32.to_le_bytes()); // bandsByteCount
+        stream.extend_from_slice(
+            &u32::try_from(subcodec_data.len())
+                .expect("test subcodec length fits u32")
+                .to_le_bytes(),
+        );
+        stream.extend_from_slice(&subcodec_data);
+        stream
+    }
+
     #[test]
     fn decode_solid_red_4x4() {
         let mut decoder = ClearCodecDecoder::new();
@@ -667,6 +696,28 @@ mod tests {
         assert_eq!(&pixels[0..4], &[0x00, 0x00, 0xFF, 0xFF]);
         // Pixel 1: blue (BGR: 0xFF, 0x00, 0x00)
         assert_eq!(&pixels[4..8], &[0xFF, 0x00, 0x00, 0xFF]);
+    }
+
+    #[test]
+    fn single_palette_rlex_decodes_exact_region_pixels() {
+        let mut decoder = ClearCodecDecoder::new();
+        // Three run pixels plus the one-pixel suite fill a 4x1 region.
+        let rlex = [1, 0x12, 0x34, 0x56, 0x00, 3];
+        let stream = make_rlex_only_stream(4, 1, &rlex);
+
+        let pixels = decoder.decode(&stream, 4, 1).unwrap();
+
+        assert_eq!(pixels, [0x12, 0x34, 0x56, 0xFF].repeat(4));
+    }
+
+    #[test]
+    fn rlex_rejects_region_pixel_underfill() {
+        let mut decoder = ClearCodecDecoder::new();
+        // Two run pixels plus the suite leave one pixel of the 4x1 region unwritten.
+        let rlex = [1, 0x12, 0x34, 0x56, 0x00, 2];
+        let stream = make_rlex_only_stream(4, 1, &rlex);
+
+        assert!(decoder.decode(&stream, 4, 1).is_err());
     }
 
     #[test]
