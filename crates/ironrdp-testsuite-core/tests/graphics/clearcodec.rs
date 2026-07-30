@@ -478,9 +478,8 @@ fn decode_stream_with_bands_layer_short_vbar_cache_miss() {
     bands_data.extend_from_slice(&[0x00, 0x00, 0x00]); // background BGR = black
 
     // V-bar: ShortCacheMiss with y_on=1, y_off=3 (2 pixels at rows 1-2)
-    // bits 13:6 = y_on (1), bits 5:0 = y_off (3)
-    let vbar_word: u16 = (1 << 6) | 3;
-    bands_data.extend_from_slice(&vbar_word.to_le_bytes());
+    // Byte 0 stores y_on; the low six bits of byte 1 store y_off.
+    bands_data.extend_from_slice(&[1, 3]);
     // 2 pixels * 3 bytes = 6 bytes of BGR pixel data (red)
     bands_data.extend_from_slice(&[0x00, 0x00, 0xFF]); // row 1: red
     bands_data.extend_from_slice(&[0x00, 0x00, 0xFF]); // row 2: red
