@@ -1158,6 +1158,29 @@ impl ProgressiveDecoder {
     }
 }
 
+const FULL_PROGRESSIVE_QUALITY: u8 = u8::MAX;
+
+fn resolve_progressive_quants(
+    quality: u8,
+    prog_quant_vals: &[ironrdp_pdu::codecs::rfx::progressive::ProgressiveCodecQuant],
+) -> Result<[ComponentCodecQuant; 3], ProgressiveDecodeError> {
+    // MS-RDPEGFX reserves 0xFF for an implicit full-quality table whose
+    // coefficients are all zero, including when quantProgVals is empty.
+    if quality == FULL_PROGRESSIVE_QUALITY {
+        return Ok([ComponentCodecQuant::LOSSLESS; 3]);
+    }
+
+    let index = usize::from(quality);
+    let quant = prog_quant_vals
+        .get(index)
+        .ok_or(ProgressiveDecodeError::InvalidQuantIndex {
+            index,
+            table_len: prog_quant_vals.len(),
+        })?;
+
+    Ok([quant.y_quant, quant.cb_quant, quant.cr_quant])
+}
+
 #[expect(
     clippy::similar_names,
     reason = "q_y/q_cb/q_cr are standard component quant index names"
@@ -1228,19 +1251,12 @@ fn decode_tile_block(
                 });
             }
 
-            let pq_idx = usize::from(tile.quality);
-            if pq_idx >= prog_quant_vals.len() {
-                return Err(ProgressiveDecodeError::InvalidQuantIndex {
-                    index: pq_idx,
-                    table_len: prog_quant_vals.len(),
-                });
-            }
-            let pq = &prog_quant_vals[pq_idx];
+            let prog_quants = resolve_progressive_quants(tile.quality, prog_quant_vals)?;
 
             tile_state.decode_first(
                 [tile.y_data, tile.cb_data, tile.cr_data],
                 [&quant_vals[q_y], &quant_vals[q_cb], &quant_vals[q_cr]],
-                [pq.y_quant, pq.cb_quant, pq.cr_quant],
+                prog_quants,
                 [tile.quant_idx_y, tile.quant_idx_cb, tile.quant_idx_cr],
                 tile.quality,
                 use_reduce_extrapolate,
@@ -1265,19 +1281,12 @@ fn decode_tile_block(
                 return Ok(Vec::new());
             }
 
-            let pq_idx = usize::from(tile.quality);
-            if pq_idx >= prog_quant_vals.len() {
-                return Err(ProgressiveDecodeError::InvalidQuantIndex {
-                    index: pq_idx,
-                    table_len: prog_quant_vals.len(),
-                });
-            }
-            let pq = &prog_quant_vals[pq_idx];
+            let prog_quants = resolve_progressive_quants(tile.quality, prog_quant_vals)?;
 
             tile_state.decode_upgrade(
                 [tile.y_srl_data, tile.cb_srl_data, tile.cr_srl_data],
                 [tile.y_raw_data, tile.cb_raw_data, tile.cr_raw_data],
-                [pq.y_quant, pq.cb_quant, pq.cr_quant],
+                prog_quants,
                 tile.quality,
             );
 
@@ -1649,6 +1658,101 @@ mod tests {
 
         decoder.reset();
         assert!(decoder.contexts.is_empty());
+    }
+
+    #[test]
+    fn decoder_accepts_implicit_full_quality_for_first_and_upgrade_tiles() {
+        use ironrdp_pdu::codecs::rfx::RfxRectangle;
+        use ironrdp_pdu::codecs::rfx::progressive::{
+            ProgressiveBlock, ProgressiveContextPdu, ProgressiveFrameBeginPdu, ProgressiveFrameEndPdu,
+            ProgressiveRegion, ProgressiveSyncPdu, ProgressiveTile, TileFirst, TileUpgrade, encode_progressive_stream,
+        };
+
+        let base_quant = ComponentCodecQuant::LOSSLESS;
+        let mut coefficients = [0i16; COEFFICIENTS_PER_COMPONENT];
+        let mut encoded_component = vec![0u8; 8192];
+        let encoded_len = encode_first_pass(
+            &mut coefficients,
+            &mut encoded_component,
+            &base_quant,
+            &ComponentCodecQuant::LOSSLESS,
+            false,
+        )
+        .unwrap();
+        encoded_component.truncate(encoded_len);
+
+        let rectangle = RfxRectangle {
+            x: 0,
+            y: 0,
+            width: 64,
+            height: 64,
+        };
+        let first_region = ProgressiveRegion {
+            tile_size: 0x40,
+            rects: vec![rectangle.clone()],
+            quant_vals: vec![base_quant],
+            quant_prog_vals: vec![],
+            flags: 0,
+            tiles: vec![ProgressiveTile::First(TileFirst {
+                quant_idx_y: 0,
+                quant_idx_cb: 0,
+                quant_idx_cr: 0,
+                x_idx: 0,
+                y_idx: 0,
+                flags: 0,
+                quality: FULL_PROGRESSIVE_QUALITY,
+                y_data: &encoded_component,
+                cb_data: &encoded_component,
+                cr_data: &encoded_component,
+                tail_data: &[],
+            })],
+        };
+        let upgrade_region = ProgressiveRegion {
+            tile_size: 0x40,
+            rects: vec![rectangle],
+            quant_vals: vec![base_quant],
+            quant_prog_vals: vec![],
+            flags: 0,
+            tiles: vec![ProgressiveTile::Upgrade(TileUpgrade {
+                quant_idx_y: 0,
+                quant_idx_cb: 0,
+                quant_idx_cr: 0,
+                x_idx: 0,
+                y_idx: 0,
+                quality: FULL_PROGRESSIVE_QUALITY,
+                y_srl_data: &[],
+                y_raw_data: &[],
+                cb_srl_data: &[],
+                cb_raw_data: &[],
+                cr_srl_data: &[],
+                cr_raw_data: &[],
+            })],
+        };
+        let blocks = vec![
+            ProgressiveBlock::Sync(ProgressiveSyncPdu),
+            ProgressiveBlock::Context(ProgressiveContextPdu {
+                context_id: 0,
+                tile_size: 0x0040,
+                flags: 0,
+            }),
+            ProgressiveBlock::FrameBegin(ProgressiveFrameBeginPdu {
+                frame_index: 0,
+                region_count: 2,
+            }),
+            ProgressiveBlock::Region(first_region),
+            ProgressiveBlock::Region(upgrade_region),
+            ProgressiveBlock::FrameEnd(ProgressiveFrameEndPdu),
+        ];
+
+        let encoded = encode_progressive_stream(&blocks).unwrap();
+        let mut decoder = ProgressiveDecoder::new();
+        let decoded_tiles = decoder.decode_bitmap(1, 64, 64, &encoded).unwrap();
+
+        assert_eq!(decoded_tiles.len(), 2);
+        let tile = decoder.contexts.get(&1).unwrap().surface.get(0, 0).unwrap();
+        assert_eq!(tile.pass, 2);
+        assert_eq!(tile.quality, FULL_PROGRESSIVE_QUALITY);
+        assert_eq!(tile.prog_quant, [ComponentCodecQuant::LOSSLESS; 3]);
     }
 
     #[test]
