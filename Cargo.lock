@@ -2677,7 +2677,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-graphics"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "bit_field",
  "bitflags 2.12.1",
