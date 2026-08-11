@@ -1350,9 +1350,8 @@ fn create_gcc_blocks<'a>(
     static_channels: impl Iterator<Item = &'a StaticVirtualChannel>,
 ) -> ConnectorResult<gcc::ClientGccBlocks> {
     use ironrdp_pdu::gcc::{
-        ClientCoreData, ClientCoreOptionalData, ClientEarlyCapabilityFlags, ClientGccBlocks, ClientNetworkData,
-        ClientSecurityData, ColorDepth, EncryptionMethod, HighColorDepth, MonitorOrientation, RdpVersion,
-        SecureAccessSequence, SupportedColorDepths,
+        ClientCoreData, ClientCoreOptionalData, ClientGccBlocks, ClientNetworkData, ClientSecurityData, ColorDepth,
+        EncryptionMethod, HighColorDepth, MonitorOrientation, RdpVersion, SecureAccessSequence, SupportedColorDepths,
     };
 
     let max_color_depth = config.bitmap.as_ref().map(|bitmap| bitmap.color_depth).unwrap_or(32);
@@ -1403,21 +1402,10 @@ fn create_gcc_blocks<'a>(
                 serial_number: Some(0),
                 high_color_depth: Some(high_color_depth),
                 supported_color_depths: Some(supported_color_depths),
-                early_capability_flags: {
-                    let mut early_capability_flags = ClientEarlyCapabilityFlags::VALID_CONNECTION_TYPE
-                        | ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU
-                        | ClientEarlyCapabilityFlags::STRONG_ASYMMETRIC_KEYS
-                        | ClientEarlyCapabilityFlags::SUPPORT_NET_CHAR_AUTODETECT
-                        | ClientEarlyCapabilityFlags::SUPPORT_SKIP_CHANNELJOIN;
-
-                    // TODO(#136): support for ClientEarlyCapabilityFlags::SUPPORT_STATUS_INFO_PDU
-
-                    if max_color_depth == 32 {
-                        early_capability_flags |= ClientEarlyCapabilityFlags::WANT_32_BPP_SESSION;
-                    }
-
-                    Some(early_capability_flags)
-                },
+                early_capability_flags: Some(client_early_capability_flags(
+                    max_color_depth,
+                    config.support_dyn_vc_gfx_protocol,
+                )),
                 dig_product_id: Some(config.dig_product_id.clone()),
                 connection_type: Some(config.connection_type),
                 server_selected_protocol: Some(selected_protocol),
@@ -1457,6 +1445,27 @@ fn create_gcc_blocks<'a>(
             .map(|flags| gcc::MultiTransportChannelData { flags }),
         monitor_extended: None,
     })
+}
+
+fn client_early_capability_flags(
+    max_color_depth: u32,
+    support_dyn_vc_gfx_protocol: bool,
+) -> gcc::ClientEarlyCapabilityFlags {
+    let mut flags = gcc::ClientEarlyCapabilityFlags::VALID_CONNECTION_TYPE
+        | gcc::ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU
+        | gcc::ClientEarlyCapabilityFlags::STRONG_ASYMMETRIC_KEYS
+        | gcc::ClientEarlyCapabilityFlags::SUPPORT_NET_CHAR_AUTODETECT
+        | gcc::ClientEarlyCapabilityFlags::SUPPORT_SKIP_CHANNELJOIN;
+
+    // TODO(#136): support for ClientEarlyCapabilityFlags::SUPPORT_STATUS_INFO_PDU
+    if max_color_depth == 32 {
+        flags |= gcc::ClientEarlyCapabilityFlags::WANT_32_BPP_SESSION;
+    }
+    if support_dyn_vc_gfx_protocol {
+        flags |= gcc::ClientEarlyCapabilityFlags::SUPPORT_DYN_VC_GFX_PROTOCOL;
+    }
+
+    flags
 }
 
 fn create_client_info_pdu(
@@ -1547,5 +1556,19 @@ fn create_client_info_pdu(
     ClientInfoPdu {
         security_header,
         client_info,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gfx_early_capability_tracks_connector_configuration() {
+        let disabled = client_early_capability_flags(32, false);
+        let enabled = client_early_capability_flags(32, true);
+
+        assert!(!disabled.contains(gcc::ClientEarlyCapabilityFlags::SUPPORT_DYN_VC_GFX_PROTOCOL));
+        assert!(enabled.contains(gcc::ClientEarlyCapabilityFlags::SUPPORT_DYN_VC_GFX_PROTOCOL));
     }
 }
