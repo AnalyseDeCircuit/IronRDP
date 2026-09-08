@@ -146,6 +146,15 @@ fn test_reactivation_preserves_bulk_decompression_history() {
     .build();
 
     let mut image = DecodedImage::new(PixelFormat::RgbA32, 4, 4);
+    let font_map = server_share_data_frame(1, pdu::rdp::headers::ShareDataPdu::FontMap(Default::default()));
+    for _ in 0..2 {
+        assert!(
+            stage
+                .process(&mut image, pdu::Action::X224, &font_map)
+                .expect("extra Font Map during active session")
+                .is_empty()
+        );
+    }
     let mut compressor = BulkCompressor::new(BulkCompressionType::Rdp5);
     let (first_frame, first_flags) = compressed_bitmap_fastpath_frame(&mut compressor);
     assert_ne!(first_flags & bulk_flags::PACKET_COMPRESSED, 0);
@@ -155,6 +164,13 @@ fn test_reactivation_preserves_bulk_decompression_history() {
         .expect("compressed FastPath update before reactivation");
 
     stage.reactivate(1003, 1001, 2, false, false);
+    let font_map = server_share_data_frame(2, pdu::rdp::headers::ShareDataPdu::FontMap(Default::default()));
+    assert!(
+        stage
+            .process(&mut image, pdu::Action::X224, &font_map)
+            .expect("extra Font Map after reactivation")
+            .is_empty()
+    );
 
     let (second_frame, second_flags) = compressed_bitmap_fastpath_frame(&mut compressor);
     assert_ne!(second_flags & bulk_flags::PACKET_COMPRESSED, 0);
@@ -172,6 +188,63 @@ fn test_reactivation_preserves_bulk_decompression_history() {
             .iter()
             .any(|output| matches!(output, ActiveStageOutput::GraphicsUpdate(_)))
     );
+}
+
+#[test]
+fn test_font_map_handling_preserves_protocol_errors_and_disconnects() {
+    use pdu::rdp::headers::ShareDataPdu;
+    use pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
+    let mut stage = ActiveStageBuilder {
+        static_channels: StaticChannelSet::new(),
+        user_channel_id: 1001,
+        io_channel_id: 1003,
+        message_channel_id: None,
+        share_id: 1,
+        compression_type: None,
+        enable_server_pointer: false,
+        pointer_software_rendering: false,
+    }
+    .build();
+    let mut image = DecodedImage::new(PixelFormat::RgbA32, 4, 4);
+    let font_map = server_share_data_frame(1, ShareDataPdu::FontMap(Default::default()));
+    assert!(
+        stage
+            .process(&mut image, pdu::Action::X224, &font_map[..font_map.len() - 1])
+            .is_err()
+    );
+    let wrong_direction = server_share_data_frame(1, ShareDataPdu::FontList(Default::default()));
+    assert!(stage.process(&mut image, pdu::Action::X224, &wrong_direction).is_err());
+    let server_error = server_share_data_frame(
+        1,
+        ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
+            ProtocolIndependentCode::RpcInitiatedDisconnect,
+        ))),
+    );
+    let outputs = stage
+        .process(&mut image, pdu::Action::X224, &server_error)
+        .expect("server disconnect PDU");
+    assert!(matches!(outputs.as_slice(), [ActiveStageOutput::Terminate(_)]));
+}
+
+fn server_share_data_frame(share_id: u32, pdu: pdu::rdp::headers::ShareDataPdu) -> Vec<u8> {
+    use pdu::rdp::headers::{ShareControlHeader, ShareControlPdu, ShareDataHeader, StreamPriority};
+    let user_data = ironrdp::core::encode_vec(&ShareControlHeader {
+        share_control_pdu: ShareControlPdu::Data(ShareDataHeader {
+            share_data_pdu: pdu,
+            stream_priority: StreamPriority::Medium,
+            compression_flags: CompressionFlags::empty(),
+            compression_type: PduCompressionType::K8,
+        }),
+        pdu_source: 1002,
+        share_id,
+    })
+    .expect("encode Share Data PDU");
+    ironrdp::core::encode_vec(&pdu::x224::X224(pdu::mcs::SendDataIndication {
+        initiator_id: 1002,
+        channel_id: 1003,
+        user_data: user_data.into(),
+    }))
+    .expect("encode server frame")
 }
 
 fn compressed_bitmap_fastpath_frame(compressor: &mut BulkCompressor) -> (Vec<u8>, u32) {

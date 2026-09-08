@@ -251,6 +251,13 @@ impl Processor {
 
                 Ok(outputs)
             }
+            ShareDataPdu::FontMap(_) => {
+                // MS-RDPBCGR 3.2.5.3.22 requires ignoring the Font Map fields.
+                // Activation has already completed, so an additional Font Map
+                // must not reset session state or terminate the connection.
+                debug!("Received Font Map after activation");
+                Ok(Vec::new())
+            }
             // FIXME: workaround fix to not terminate the session on "unhandled PDU: Set Keyboard Indicators PDU"
             ShareDataPdu::SetKeyboardIndicators(data) => {
                 debug!("Got Keyboard Indicators PDU: {data:?}");
